@@ -26,7 +26,18 @@ from builder.utils import compact_json, has_page_read, has_page_write, normalize
 
 @frappe.whitelist()
 def get_versioned_doc(snapshot: str) -> dict:
-	return builder_snapshot.get_versioned_doc(snapshot).as_dict()
+	snapshot_doc = frappe.get_doc("Builder Snapshot", snapshot)
+	snapshot_doc.check_permission("read")
+	try:
+		source = frappe.get_doc(snapshot_doc.reference_doctype, snapshot_doc.reference_name)
+	except frappe.DoesNotExistError:
+		source = None
+	if source is not None:
+		source.check_permission("read")
+	doc = builder_snapshot.get_versioned_doc(snapshot)
+	doc.check_permission("read")
+	doc.apply_fieldlevel_read_permissions()
+	return doc.as_dict()
 
 
 @frappe.whitelist()
