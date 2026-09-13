@@ -58,16 +58,7 @@ def get_page_preview_html(page: str, **kwargs) -> Response:
 	renderer.doctype = "Builder Page"
 	frappe.local.no_cache = 1
 	renderer.init_context()
-	response = renderer.render()
-	page_doc = frappe.get_cached_doc("Builder Page", page)
-	frappe.enqueue_doc(
-		page_doc.doctype,
-		page_doc.name,
-		"generate_page_preview_image",
-		html=str(response.data, "utf-8"),
-		queue="short",
-	)
-	return response
+	return renderer.render()
 
 
 @frappe.whitelist()
