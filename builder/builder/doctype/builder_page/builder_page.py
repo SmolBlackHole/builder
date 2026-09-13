@@ -486,13 +486,15 @@ class BuilderPage(WebsiteGenerator):
 
 		context.preview = getattr(getattr(frappe.local, "request", None), "for_preview", None)
 
-		if context.preview:
-			context.disable_auto_dark_mode = 0
+		if context.preview or getattr(getattr(frappe.local, "request", None), "for_screenshot", False):
 			# /builder_assets/tokens.css is a rendered route, not a real file, so
 			# the preview/PDF generator can't fetch it. Inline the variables instead.
 			from builder.builder.doctype.builder_token.builder_token import get_variables_css
 
 			context.inline_tokens_css = get_variables_css()
+
+		if context.preview:
+			context.disable_auto_dark_mode = 0
 			# Honour the dark/light mode the editor previews in (canvasDarkMode), so the
 			# initial server render matches it instead of falling back to the OS scheme.
 			scheme = frappe.form_dict.get("prefers_color_scheme")
@@ -644,21 +646,26 @@ class BuilderPage(WebsiteGenerator):
 
 		return page_data
 
-	def generate_page_preview_image(self, html=None):
-		public_path, local_path = get_builder_page_preview_file_paths(self)
-		if not html:
-			html = self.get_preview_html()
+	def generate_page_preview_image(self):
+		self.reload()
+		if not self.published or self.authenticated_access:
+			return
 
-		generate_preview(
-			html,
-			local_path,
-		)
+		public_path, local_path = get_builder_page_preview_file_paths(self)
+		previous_session = frappe.session.copy()
+		previous_form_dict = frappe.local.form_dict
+		try:
+			frappe.set_user("Guest")
+			html = self.get_preview_html(published_only=True)
+			generate_preview(html, local_path)
+		finally:
+			frappe.set_user(previous_session.user)
+			frappe.local.session.update(previous_session)
+			frappe.local.form_dict = previous_form_dict
 		self.db_set("preview", public_path, commit=True, update_modified=False)
 
-	def get_preview_html(self) -> str:
-		"""Render this page in preview mode (uses draft_blocks when present), so a
-		preview can be generated for unpublished/draft pages too — not just for
-		pages reachable via their published route."""
+	def get_preview_html(self, *, published_only: bool = False) -> str:
+		"""Render a private draft preview, or published blocks for a public thumbnail."""
 		# set_request() swaps frappe.local.request for a faked GET request. When
 		# this runs synchronously inside a real web request (e.g. run_doc_method),
 		# that clobbers the live request and drops its `after_response`, which
@@ -666,7 +673,8 @@ class BuilderPage(WebsiteGenerator):
 		previous_request = getattr(frappe.local, "request", None)
 		try:
 			set_request(method="GET", path=f"/{self.route or ''}")
-			frappe.local.request.for_preview = True
+			frappe.local.request.for_preview = not published_only
+			frappe.local.request.for_screenshot = True
 			frappe.local.no_cache = 1
 			renderer = BuilderPageRenderer(path="")
 			renderer.docname = self.name

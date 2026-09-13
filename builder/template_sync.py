@@ -314,8 +314,7 @@ def ensure_template_preview(page_doc, app="builder"):
 	public_path, local_path = get_builder_page_preview_file_paths(page_doc, app=app)
 	if not os.path.exists(local_path):
 		try:
-			# generate_page_preview_image renders the draft in preview mode, so it
-			# works for these unpublished template pages
+			# Unpublished templates intentionally have no public generated thumbnail.
 			page_doc.generate_page_preview_image()
 		except Exception:
 			frappe.log_error(f"Failed to generate preview for template page {page_doc.name}")
