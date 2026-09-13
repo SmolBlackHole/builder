@@ -637,7 +637,8 @@ class BuilderPage(WebsiteGenerator):
 					frappe.local.flags.redirect_location = location
 					raise frappe.Redirect(http_status_code)
 
-			_locals = dict(data=frappe._dict(), redirect=redirect)
+			preview = bool(getattr(getattr(frappe.local, "request", None), "for_preview", False))
+			_locals = dict(data=frappe._dict(), preview=preview, redirect=redirect)
 			execute_script(self.page_data_script, _locals, self.name)
 			page_data.update(_locals["data"])
 

@@ -568,6 +568,24 @@ class TestBuilderPage(FrappeTestCase):
 			frappe.local.flags.redirect_location = None
 			page.delete()
 
+	def test_page_data_script_receives_server_preview_state(self):
+		page = frappe.get_doc(
+			{
+				"doctype": "Builder Page",
+				"page_title": "Preview State Test",
+				"page_data_script": 'data.preview = preview',
+			}
+		).insert()
+		previous = getattr(frappe.local, "request", None)
+		try:
+			frappe.local.request = frappe._dict(for_preview=True)
+			self.assertTrue(page.get_page_data().preview)
+			frappe.local.request.for_preview = False
+			self.assertFalse(page.get_page_data().preview)
+		finally:
+			frappe.local.request = previous
+			page.delete()
+
 	def test_component_client_script(self):
 		component_root = Block(element="div", blockId="comp-root")
 		component_content = Block(element="h4", blockId="comp-content", innerHTML="Component Content")
