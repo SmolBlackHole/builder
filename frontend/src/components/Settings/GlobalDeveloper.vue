@@ -12,7 +12,6 @@
 				"
 				:options="[
 					{ label: __('Don\'t Execute'), value: 'Don\'t Execute' },
-					{ label: __('Restricted'), value: 'Restricted' },
 					{ label: __('Unrestricted'), value: 'Unrestricted' },
 				]" />
 		</div>
@@ -20,7 +19,9 @@
 			size="sm"
 			:label="__('Prevent Click Emulation')"
 			:description="
-				__('Prevents click events from being emulated in the editor for blocks with Block Client Scripts.')
+				__(
+					'Prevents click events from being emulated in the editor for blocks with Block Client Scripts.',
+				)
 			"
 			:modelValue="Boolean(builderSettings.doc?.restrict_click_handlers)"
 			@update:modelValue="
@@ -31,7 +32,7 @@
 		<p class="text-p-sm text-ink-gray-5">
 			{{
 				__(
-					"Note: Block Scripts are executed in a sandboxed environment. This may have limitations and might not perfectly replicate live site behavior. Executing untrusted scripts could be unsafe.",
+					"Block scripts are trusted code. Keep execution disabled unless you trust every attached script.",
 				)
 			}}
 		</p>

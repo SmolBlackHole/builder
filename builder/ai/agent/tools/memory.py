@@ -17,7 +17,13 @@ MAX_FACT_CHARS = 500
 def memory_context() -> str:
 	"""The saved facts as a context block, one line per memory with its id (the
 	handle `remember(forget=...)` takes). Empty string when nothing is saved."""
-	rows = frappe.get_all(DOCTYPE, fields=["name", "content"], order_by="creation asc", limit=MAX_MEMORIES)
+	rows = frappe.get_list(
+		DOCTYPE,
+		filters={"owner": frappe.session.user},
+		fields=["name", "content"],
+		order_by="creation asc",
+		limit=MAX_MEMORIES,
+	)
 	if not rows:
 		return ""
 	lines = [f"- [{r.name}] {r.content}" for r in rows]
@@ -43,21 +49,26 @@ def run_remember(ctx, args: dict) -> str:
 def forget_memory(memory_id: str) -> str:
 	if not frappe.db.exists(DOCTYPE, memory_id):
 		return f"FAILED: no memory '{memory_id}' — ids are in your Saved memory context."
-	frappe.delete_doc(DOCTYPE, memory_id, ignore_permissions=True)
+	doc = frappe.get_doc(DOCTYPE, memory_id)
+	if doc.owner != frappe.session.user:
+		return f"FAILED: no memory '{memory_id}' — ids are in your Saved memory context."
+	doc.flags.ignore_permissions = False
+	doc.check_permission("delete")
+	doc.delete()
 	return f"Forgot [{memory_id}]."
 
 
 def save_fact(fact: str) -> str:
 	if len(fact) > MAX_FACT_CHARS:
 		return f"FAILED: keep a fact under {MAX_FACT_CHARS} characters — one self-contained sentence or two."
-	if existing := frappe.db.get_value(DOCTYPE, {"content": fact}):
+	if existing := frappe.db.get_value(DOCTYPE, {"content": fact, "owner": frappe.session.user}):
 		return f"Already remembered as [{existing}]."
-	if frappe.db.count(DOCTYPE) >= MAX_MEMORIES:
+	if frappe.db.count(DOCTYPE, {"owner": frappe.session.user}) >= MAX_MEMORIES:
 		return (
 			f"FAILED: memory is full ({MAX_MEMORIES} facts). Forget an outdated one first "
 			"(remember with forget=<id>)."
 		)
-	doc = frappe.get_doc({"doctype": DOCTYPE, "content": fact}).insert(ignore_permissions=True)
+	doc = frappe.get_doc({"doctype": DOCTYPE, "content": fact}).insert()
 	return f"Remembered [{doc.name}]."
 
 

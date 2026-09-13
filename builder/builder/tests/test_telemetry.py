@@ -99,7 +99,7 @@ class TestPageLifecycleEvents(FrappeTestCase):
 
 class TestIdentifyPersona(FrappeTestCase):
 	def test_sends_the_answers_to_the_site_profile(self):
-		with patch(IDENTIFY) as identify:
+		with patch.dict(frappe.conf, {"builder_enable_persona_telemetry": 1}), patch(IDENTIFY) as identify:
 			identify_persona(role="designer", use_case="portfolio", source="search")
 
 		identify.assert_called_once_with(
@@ -109,5 +109,11 @@ class TestIdentifyPersona(FrappeTestCase):
 	def test_a_skipped_survey_is_not_sent(self):
 		with patch(IDENTIFY) as identify:
 			identify_persona()
+
+		identify.assert_not_called()
+
+	def test_persona_is_not_sent_without_site_opt_in(self):
+		with patch.dict(frappe.conf, {"builder_enable_persona_telemetry": 0}), patch(IDENTIFY) as identify:
+			identify_persona(role="designer", use_case="portfolio", source="search")
 
 		identify.assert_not_called()

@@ -131,6 +131,8 @@ def run_preview_page(ctx, args: dict) -> str:
 		return "Preview limit reached for this turn — proceed with what you have."
 	ctx.preview_count += 1
 	page = frappe.get_doc("Builder Page", page_id)
+	page.flags.ignore_permissions = False
+	page.check_permission("read")
 	try:
 		image = render_page_image(page)
 	except Exception:

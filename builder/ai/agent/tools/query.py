@@ -195,8 +195,10 @@ def run_read_page(ctx, args: dict) -> str:
 	ctx.page_read_count += 1
 
 	from builder.ai.page_writer import load_page_root
+	from builder.utils import get_permitted_doc
 
-	title, route = frappe.db.get_value("Builder Page", page_id, ["page_title", "route"])
+	page = get_permitted_doc("Builder Page", page_id)
+	title, route = page.page_title, page.route
 	label = f"Page '{title or page_id}' (route: {route})"
 	root = load_page_root(page_id)
 	if root is None:

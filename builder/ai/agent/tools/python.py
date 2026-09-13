@@ -13,6 +13,14 @@ convention.
 import frappe
 
 from builder.ai.agent.registry import Tool
+from builder.utils import (
+	get_cached_doc_as_dict,
+	get_doc_as_dict,
+	safe_count,
+	safe_exists,
+	safe_get_list,
+	safe_get_single_value,
+)
 
 RESULT_LIMIT = 6000
 SAVEPOINT = "builder_ai_run_python"
@@ -29,34 +37,41 @@ def sandbox_globals() -> dict:
 	safe = get_safe_globals()  # built per call — rebinding keys touches only this copy
 	fr = safe["frappe"]
 	db = fr["db"]
+	sandbox_get_doc = fr["get_doc"]
 	for method in STRIPPED_DB_METHODS:
 		db.pop(method, None)
 	# Server-script globals read with ELEVATED rights (get_all and frappe.db.*
 	# skip permission checks) — right for System-Manager-authored scripts, wrong
 	# for model-written ones. Every read here answers with the session user's OWN
 	# permissions: Bob sees exactly what the person driving it could open in Desk.
-	fr["get_all"] = fr["get_list"] = db["get_all"] = db["get_list"] = frappe.get_list
-	fr["get_doc"] = fr["get_cached_doc"] = guarded_get_doc
-	for method in ("get_value", "get_single_value", "exists", "count"):
-		db[method] = read_guarded(getattr(frappe.db, method))
+	fr["get_all"] = fr["get_list"] = db["get_all"] = db["get_list"] = safe_get_list
+	fr["get_doc"] = lambda doctype, name=None: (
+		sandbox_get_doc(doctype)
+		if name is None and isinstance(doctype, dict)
+		else get_doc_as_dict(doctype, name)
+	)
+	fr["get_cached_doc"] = get_cached_doc_as_dict
+	db["get_value"] = safe_get_value
+	db["get_single_value"] = safe_get_single_value
+	db["exists"] = safe_exists
+	db["count"] = safe_count
 	if "get_value" in fr:
-		fr["get_value"] = db["get_value"]
+		fr["get_value"] = safe_get_value
 	return safe
 
 
-def guarded_get_doc(*args, **kwargs):
-	doc = frappe.get_doc(*args, **kwargs)
-	if not doc.has_permission():
-		frappe.throw(f"No permission to read {doc.doctype}", frappe.PermissionError)
-	return doc
-
-
-def read_guarded(fn):
-	def checked(doctype, *args, **kwargs):
-		frappe.has_permission(doctype, throw=True)
-		return fn(doctype, *args, **kwargs)
-
-	return checked
+def safe_get_value(doctype, filters, fieldname="name", **kwargs):
+	kwargs.pop("for_update", None)
+	as_dict = kwargs.pop("as_dict", False)
+	fields = list(fieldname) if isinstance(fieldname, list | tuple) else [fieldname]
+	rows = safe_get_list(doctype, filters=filters, fields=fields, limit=1, **kwargs)
+	if not rows:
+		return None
+	if as_dict:
+		return rows[0]
+	if isinstance(fieldname, list | tuple):
+		return tuple(rows[0].get(field) for field in fields)
+	return rows[0].get(fieldname)
 
 
 def run_python(ctx, args: dict) -> str:

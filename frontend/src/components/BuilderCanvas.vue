@@ -32,7 +32,10 @@
 						class="w-auto cursor-pointer p-2"
 						@click.stop="builderStore.canvasDarkMode = !builderStore.canvasDarkMode">
 						<span
-							:class="[builderStore.canvasDarkMode ? 'lucide-sun' : 'lucide-moon', 'h-8 w-6 text-ink-gray-8']"
+							:class="[
+								builderStore.canvasDarkMode ? 'lucide-sun' : 'lucide-moon',
+								'h-8 w-6 text-ink-gray-8',
+							]"
 							aria-hidden="true" />
 					</div>
 				</Tooltip>
@@ -129,11 +132,7 @@ import usePageStore from "@/stores/pageStore";
 import { __ } from "@/translation";
 import { BreakpointConfig, CanvasHistory } from "@/types/Builder/BuilderCanvas";
 import { getBlockObject, isCtrlOrCmd } from "@/utils/helpers";
-import {
-	type BlockClientScriptRuntime,
-	executeClientScriptRestricted,
-	executeClientScriptUnrestricted,
-} from "@/utils/scriptSandbox";
+import { type BlockClientScriptRuntime, executeClientScriptUnrestricted } from "@/utils/scriptSandbox";
 import { useBlockEventHandlers } from "@/utils/useBlockEventHandlers";
 import { useBlockSelection } from "@/utils/useBlockSelection";
 import { useBuildFollow } from "@/utils/useBuildFollow";
@@ -483,17 +482,14 @@ function emulateBlockClientScript(script: BlockClientScriptRuntime) {
 	)}"][data-breakpoint="${escapeAttributeValue(script.breakpoint)}"]`;
 	blockStyles.set(registrationKey, script.css ? `${selector} { ${script.css} }` : "");
 
-	const mode = builderSettings.doc?.execute_block_scripts_in_editor ?? "Restricted";
+	const mode = builderSettings.doc?.execute_block_scripts_in_editor ?? "Don't Execute";
 	let cleanup = () => {};
-	if (mode !== "Don't Execute" && script.javascript.trim()) {
+	if (mode === "Unrestricted" && script.javascript.trim()) {
 		const context = {
 			componentData: script.componentData,
 			props: script.props,
 		};
-		cleanup =
-			mode === "Unrestricted"
-				? executeClientScriptUnrestricted(script.element, script.javascript, context)
-				: executeClientScriptRestricted(script.element, canvasContainer.value, script.javascript, context);
+		cleanup = executeClientScriptUnrestricted(script.element, script.javascript, context);
 	}
 
 	return () => {

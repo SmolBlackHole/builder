@@ -12,9 +12,9 @@ import html
 import re
 
 import frappe
-import requests
 
 from builder.ai.agent.registry import Tool
+from builder.network import open_public_url, read_bounded_bytes
 
 MAX_URL_READS_PER_TURN = 5
 MAX_RESEARCH_PER_TURN = 2
@@ -42,8 +42,12 @@ def run_read_url(ctx, args: dict) -> str:
 	if not content_type.startswith(READABLE_TYPES):
 		return f"FAILED: '{content_type or 'unknown type'}' is not a readable page — text/HTML only."
 	if response.status_code >= 400:
+		response.close()
 		return f"FAILED: {final_url} answered HTTP {response.status_code}."
-	raw = read_bounded(response)
+	try:
+		raw = read_bounded(response)
+	finally:
+		response.close()
 	text = html_to_text(raw) if "json" not in content_type else raw
 	if len(text) > TEXT_LIMIT:
 		text = text[:TEXT_LIMIT] + "… (truncated)"
@@ -58,69 +62,11 @@ def fetch_public(url: str):
 	ADDRESS the guard validated: letting requests re-resolve the hostname is the
 	other classic bypass (DNS rebinding — a public answer for the check, a private
 	one for the connect)."""
-	from urllib.parse import urljoin
-
-	from builder.api import assert_not_private_url
-
-	for _ in range(MAX_REDIRECTS + 1):
-		ips = assert_not_private_url(url)
-		response = pinned_get(url, ips[0])
-		location = response.headers.get("location")
-		if response.status_code in (301, 302, 303, 307, 308) and location:
-			url = urljoin(url, location)
-			continue
-		return response, url
-	raise Exception(f"too many redirects (>{MAX_REDIRECTS})")
-
-
-class SniAdapter(requests.adapters.HTTPAdapter):
-	"""TLS for a pinned connection: the socket dials the validated IP while the
-	handshake (SNI) and certificate check use the real hostname."""
-
-	def __init__(self, hostname: str):
-		self.hostname = hostname
-		super().__init__()
-
-	def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
-		pool_kwargs["server_hostname"] = self.hostname
-		super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
-
-
-def pinned_url(url: str, ip: str) -> tuple[str, str]:
-	"""The URL rewritten to dial the validated address, plus the Host header that
-	keeps the request addressed to the original site."""
-	from urllib.parse import urlparse
-
-	parsed = urlparse(url)
-	literal = f"[{ip}]" if ":" in ip else ip
-	netloc = f"{literal}:{parsed.port}" if parsed.port else literal
-	host_header = f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
-	return parsed._replace(netloc=netloc).geturl(), host_header
-
-
-def pinned_get(url: str, ip: str):
-	from urllib.parse import urlparse
-
-	target, host_header = pinned_url(url, ip)
-	session = requests.Session()
-	session.mount("https://", SniAdapter(urlparse(url).hostname))
-	return session.get(
-		target,
-		timeout=FETCH_TIMEOUT,
-		stream=True,
-		allow_redirects=False,
-		headers={"User-Agent": USER_AGENT, "Host": host_header},
-	)
+	return open_public_url(url, timeout=FETCH_TIMEOUT, max_redirects=MAX_REDIRECTS)
 
 
 def read_bounded(response) -> str:
-	chunks, total = [], 0
-	for chunk in response.iter_content(chunk_size=65536, decode_unicode=False):
-		chunks.append(chunk)
-		total += len(chunk)
-		if total >= MAX_BYTES:
-			break
-	return b"".join(chunks).decode(response.encoding or "utf-8", errors="replace")
+	return read_bounded_bytes(response, MAX_BYTES).decode(response.encoding or "utf-8", errors="replace")
 
 
 BLOCK_TAGS_RE = re.compile(r"<(script|style|noscript|svg|template)\b.*?</\1>", re.IGNORECASE | re.DOTALL)

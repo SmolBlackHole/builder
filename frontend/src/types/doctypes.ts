@@ -1,18 +1,18 @@
 interface DocType {
-    name: string;
-    creation: string;
-    modified: string;
-    owner: string;
-    modified_by: string;
-  }
+	name: string;
+	creation: string;
+	modified: string;
+	owner: string;
+	modified_by: string;
+}
 
-  interface ChildDocType extends DocType {
-    parent?: string;
-    parentfield?: string;
-    parenttype?: string;
-    idx?: number;
-  }
-  
+interface ChildDocType extends DocType {
+	parent?: string;
+	parentfield?: string;
+	parenttype?: string;
+	idx?: number;
+}
+
 // Last updated: 2026-06-05 16:00:00.000000
 export interface BuilderSettings extends DocType {
 	/** Script: Code */
@@ -38,7 +38,7 @@ export interface BuilderSettings extends DocType {
 	/** Body HTML: Code */
 	body_html?: string;
 	/** Execute Block Scripts in Editor: Select */
-	execute_block_scripts_in_editor?: "Don't Execute" | "Restricted" | "Unrestricted";
+	execute_block_scripts_in_editor?: "Don't Execute" | "Unrestricted";
 	/** Restrict Click Handlers: Check */
 	restrict_click_handlers: 0 | 1;
 	/** AI API Key: Password */
@@ -57,26 +57,26 @@ export interface UserFont extends DocType {
 
 // Last updated: 2026-05-24 12:00:00.000000
 export interface BuilderToken extends DocType {
-  /** Type: Select */
-  type?: 'Color' | 'Dimension' | 'Font';
-  /** Value: Data */
-  value: string;
-  /** Token Name: Data */
-  token_name: string;
-  /** Is Standard: Check */
-  is_standard: 0 | 1;
-  /** Dark Value: Data */
-  dark_value?: string;
-  /** Group: Data */
-  group?: string;
+	/** Type: Select */
+	type?: "Color" | "Dimension" | "Font";
+	/** Value: Data */
+	value: string;
+	/** Token Name: Data */
+	token_name: string;
+	/** Is Standard: Check */
+	is_standard: 0 | 1;
+	/** Dark Value: Data */
+	dark_value?: string;
+	/** Group: Data */
+	group?: string;
 }
 
 // Last updated: 2025-11-11 11:51:16.422175
 export interface BuilderProjectFolder extends DocType {
-  /** Folder Name: Data */
-  folder_name?: string;
-  /** Is Standard: Check */
-  is_standard: 0 | 1;
+	/** Folder Name: Data */
+	folder_name?: string;
+	/** Is Standard: Check */
+	is_standard: 0 | 1;
 }
 
 // Last updated: 2024-09-19 13:07:00.935349
@@ -115,56 +115,56 @@ export interface BuilderClientScript extends DocType {
 
 // Last updated: 2026-08-17 17:40:00.000000
 export interface BuilderPage extends DocType {
-  /** Page Name: Data */
-  page_name?: string;
-  /** Route: Data */
-  route?: string;
-  /** Published: Check */
-  published: 0 | 1;
-  /** Blocks: Long Text */
-  blocks?: any;
-  /** Page Preview: Data */
-  preview?: string;
-  /** Title: Data */
-  page_title?: string;
-  /** Page Data Script: Code */
-  page_data_script?: string;
-  /** Dynamic Route: Check */
-  dynamic_route: 0 | 1;
-  /** Draft Blocks: Long Text */
-  draft_blocks?: any;
-  /** Image: Attach Image */
-  meta_image?: string;
-  /** Description: Small Text */
-  meta_description?: string;
-  /** Canonical URL: Data */
-  canonical_url?: string;
-  /** Language: Data */
-  language?: string;
-  /** Client Scripts: Table MultiSelect (Builder Page Client Script) */
-  client_scripts: BuilderPageClientScript[];
-  /** Is Template: Check */
-  is_template: 0 | 1;
-  /** Template Group: Data */
-  template_group?: string;
-  /** Favicon: Attach Image */
-  favicon?: string;
-  /** Authenticated Access: Check */
-  authenticated_access: 0 | 1;
-  /** Disable Indexing: Check */
-  disable_indexing: 0 | 1;
-  /** Project Folder: Link (Builder Project Folder) */
-  project_folder?: string;
-  /** Head HTML: Code */
-  head_html?: string;
-  /** Body HTML: Code */
-  body_html?: string;
-  /** Is Standard: Check */
-  is_standard: 0 | 1;
-  /** App: Select */
-  app?: any;
-  /** Published At: Datetime */
-  published_at?: string;
+	/** Page Name: Data */
+	page_name?: string;
+	/** Route: Data */
+	route?: string;
+	/** Published: Check */
+	published: 0 | 1;
+	/** Blocks: Long Text */
+	blocks?: any;
+	/** Page Preview: Data */
+	preview?: string;
+	/** Title: Data */
+	page_title?: string;
+	/** Page Data Script: Code */
+	page_data_script?: string;
+	/** Dynamic Route: Check */
+	dynamic_route: 0 | 1;
+	/** Draft Blocks: Long Text */
+	draft_blocks?: any;
+	/** Image: Attach Image */
+	meta_image?: string;
+	/** Description: Small Text */
+	meta_description?: string;
+	/** Canonical URL: Data */
+	canonical_url?: string;
+	/** Language: Data */
+	language?: string;
+	/** Client Scripts: Table MultiSelect (Builder Page Client Script) */
+	client_scripts: BuilderPageClientScript[];
+	/** Is Template: Check */
+	is_template: 0 | 1;
+	/** Template Group: Data */
+	template_group?: string;
+	/** Favicon: Attach Image */
+	favicon?: string;
+	/** Authenticated Access: Check */
+	authenticated_access: 0 | 1;
+	/** Disable Indexing: Check */
+	disable_indexing: 0 | 1;
+	/** Project Folder: Link (Builder Project Folder) */
+	project_folder?: string;
+	/** Head HTML: Code */
+	head_html?: string;
+	/** Body HTML: Code */
+	body_html?: string;
+	/** Is Standard: Check */
+	is_standard: 0 | 1;
+	/** App: Select */
+	app?: any;
+	/** Published At: Datetime */
+	published_at?: string;
 }
 
 // Last updated: 2026-06-10 00:00:00.000000
@@ -183,46 +183,46 @@ export interface BuilderSnapshot extends DocType {
 
 // Last updated: 2026-08-18 18:11:58.308298
 export interface BuilderComponent extends DocType {
-  /** Component Name: Data */
-  component_name?: string;
-  /** Block: Long Text */
-  block?: any;
-  /** For Web Page: Link (Builder Page) */
-  for_web_page?: string;
-  /** Component ID: Data */
-  component_id?: string;
-  /** Component Data Script: Code */
-  component_data_script?: string;
+	/** Component Name: Data */
+	component_name?: string;
+	/** Block: Long Text */
+	block?: any;
+	/** For Web Page: Link (Builder Page) */
+	for_web_page?: string;
+	/** Component ID: Data */
+	component_id?: string;
+	/** Component Data Script: Code */
+	component_data_script?: string;
 }
 
 // Last updated: 2026-08-04 10:00:00.000000
 export interface BuilderAIProvider extends DocType {
-  /** Provider Name: Data */
-  provider_name: string;
-  /** Enabled: Check */
-  enabled: 0 | 1;
-  /** Route Prefix: Data */
-  route_prefix: string;
-  /** LiteLLM Provider: Data */
-  litellm_provider: string;
-  /** API Base: Data */
-  api_base?: string;
-  /** API Key: Password */
-  api_key?: string;
+	/** Provider Name: Data */
+	provider_name: string;
+	/** Enabled: Check */
+	enabled: 0 | 1;
+	/** Route Prefix: Data */
+	route_prefix: string;
+	/** LiteLLM Provider: Data */
+	litellm_provider: string;
+	/** API Base: Data */
+	api_base?: string;
+	/** API Key: Password */
+	api_key?: string;
 }
 
 // Last updated: 2026-08-04 10:00:00.000000
 export interface BuilderAIModel extends DocType {
-  /** Label: Data */
-  label: string;
-  /** Provider: Link (Builder AI Provider) */
-  provider: string;
-  /** Model ID: Data */
-  model_id: string;
-  /** Enabled: Check */
-  enabled: 0 | 1;
-  /** Supports Vision: Check */
-  supports_vision: 0 | 1;
-  /** Context Window: Int */
-  max_tokens?: number;
+	/** Label: Data */
+	label: string;
+	/** Provider: Link (Builder AI Provider) */
+	provider: string;
+	/** Model ID: Data */
+	model_id: string;
+	/** Enabled: Check */
+	enabled: 0 | 1;
+	/** Supports Vision: Check */
+	supports_vision: 0 | 1;
+	/** Context Window: Int */
+	max_tokens?: number;
 }

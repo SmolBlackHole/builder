@@ -12,6 +12,7 @@ the model can only *propose*.
 import frappe
 
 from builder.ai.session import AISession
+from builder.utils import get_permitted_doc
 
 # Sensitive action kinds the confirm card understands. Kept explicit so an unknown
 # kind can never be applied.
@@ -60,6 +61,7 @@ def apply_pending_action(kind: str, payload: dict) -> str:
 	if kind not in KINDS:
 		frappe.throw(frappe._("Unknown pending action: {0}").format(kind))
 	payload = payload or {}
+	authorize_pending_action(kind, payload)
 	return {
 		"home_page": apply_home_page,
 		"global_settings": apply_global_settings,
@@ -69,9 +71,37 @@ def apply_pending_action(kind: str, payload: dict) -> str:
 	}[kind](payload)
 
 
+def authorize_pending_action(kind: str, payload: dict) -> None:
+	if kind in {"home_page", "global_settings"}:
+		frappe.has_permission("Builder Settings", "write", throw=True)
+		return
+	if kind in {"create_doctype", "connect_form"}:
+		if "System Manager" not in frappe.get_roles():
+			frappe.throw(
+				frappe._("Only a System Manager may change the site data model."), frappe.PermissionError
+			)
+		if kind == "connect_form" and not frappe.conf.get("builder_enable_ai_form_generation"):
+			frappe.throw(frappe._("AI form generation is disabled for this site."), frappe.PermissionError)
+		page_id = (payload.get("page_id") or "").strip()
+		if kind == "connect_form" and not page_id:
+			frappe.throw(frappe._("Builder Page is required."), frappe.ValidationError)
+		if page_id:
+			get_permitted_doc("Builder Page", page_id, "write")
+		return
+	if kind == "seed_sample_data":
+		doctype = (payload.get("doctype") or "").strip()
+		if not doctype:
+			frappe.throw(frappe._("DocType is required."), frappe.ValidationError)
+		frappe.has_permission(doctype, "create", throw=True)
+
+
 def apply_home_page(payload: dict) -> str:
 	route = (payload.get("route") or "").strip().lstrip("/")
-	frappe.db.set_single_value("Builder Settings", "home_page", route)
+	settings = frappe.get_single("Builder Settings")
+	settings.flags.ignore_permissions = False
+	settings.check_permission("write")
+	settings.home_page = route
+	settings.save()
 	return frappe._("Home page set to /{0}").format(route)
 
 
@@ -83,7 +113,7 @@ def apply_global_settings(payload: dict) -> str:
 			settings.set(field, payload[field])
 			changed.append(field)
 	if changed:
-		settings.save(ignore_permissions=True)
+		settings.save()
 	return frappe._("Updated global settings: {0}").format(", ".join(changed) or "nothing")
 
 
@@ -127,7 +157,7 @@ def apply_create_doctype(payload: dict) -> str:
 				{"role": "Guest", "read": 1},
 			],
 		}
-	).insert(ignore_permissions=True)
+	).insert()
 	return frappe._("Created DocType {0} with {1} field(s)").format(name, len(fields))
 
 
@@ -140,7 +170,7 @@ def apply_seed_sample_data(payload: dict) -> str:
 	for row in rows:
 		if not isinstance(row, dict):
 			continue
-		frappe.get_doc({"doctype": doctype, **row}).insert(ignore_permissions=True)
+		frappe.get_doc({"doctype": doctype, **row}).insert()
 		created += 1
 	return frappe._("Seeded {0} sample record(s) into {1}").format(created, doctype)
 
@@ -179,7 +209,7 @@ def apply_connect_form(payload: dict) -> str:
 				"fields": doctype_fields,
 				"permissions": [{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}],
 			}
-		).insert(ignore_permissions=True)
+		).insert()
 
 	# 2. Web Form bound to it — guest-allowed (login_required off), published.
 	wf_name = desk_slug(doctype)
@@ -200,7 +230,7 @@ def apply_connect_form(payload: dict) -> str:
 					for f in fields
 				],
 			}
-		).insert(ignore_permissions=True)
+		).insert()
 
 	# 3. client script on the page: capture the form's fields and POST them to the
 	#    stock Web Form accept endpoint (guest-safe, rate-limited, ignore_permissions).
@@ -226,7 +256,7 @@ def attach_form_script(page_id: str, doctype: str, web_form: str, selector: str,
 		# public .js file; a bare set_value leaves the page serving stale JS.
 		doc = frappe.get_doc("Builder Client Script", existing)
 		doc.script = code
-		doc.save(ignore_permissions=True)
+		doc.save()
 		script_id = existing
 	else:
 		script_id = (
@@ -238,13 +268,13 @@ def attach_form_script(page_id: str, doctype: str, web_form: str, selector: str,
 					"script": code,
 				}
 			)
-			.insert(ignore_permissions=True)
+			.insert()
 			.name
 		)
-	page = frappe.get_doc("Builder Page", page_id)
+	page = get_permitted_doc("Builder Page", page_id, "write")
 	if not any(r.builder_script == script_id for r in page.get("client_scripts") or []):
 		page.append("client_scripts", {"builder_script": script_id})
-		page.save(ignore_permissions=True)
+		page.save()
 
 
 def build_form_script(selector: str, web_form: str, fieldnames: list) -> str:

@@ -6,7 +6,13 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 from PIL import Image
 
-from builder.api import import_remote_assets, import_remote_fonts
+from builder.api import (
+	convert_to_webp,
+	create_page_from_template,
+	get_template_groups,
+	import_remote_assets,
+	import_remote_fonts,
+)
 
 FONT = "https://cdn.example.com/inter.woff2"
 
@@ -33,13 +39,26 @@ class Response:
 		if self.status >= 400:
 			raise Exception(f"HTTP {self.status}")
 
+	def as_fetch_result(self):
+		self.raise_for_status()
+		return self.content, self.headers, "https://cdn.example.com/final"
+
 
 @contextmanager
 def serving(*responses):
-	with (
-		patch("builder.api.requests.get", side_effect=list(responses)) as get,
-		patch("builder.api.assert_not_private_url"),
-	):
+	results = iter(
+		response.as_fetch_result() if isinstance(response, Response) else response for response in responses
+	)
+
+	def fetch(*_args, max_bytes, **_kwargs):
+		result = next(results)
+		if isinstance(result, Exception):
+			raise result
+		if len(result[0]) > max_bytes:
+			raise frappe.ValidationError
+		return result
+
+	with patch("builder.api.fetch_public_bytes", side_effect=fetch) as get:
 		yield get
 
 
@@ -54,12 +73,12 @@ class TestImportRemoteAssets(FrappeTestCase):
 
 		self.assertTrue(imported[url].endswith(".webp"))
 
-	def test_keeps_svg_by_content_type(self):
+	def test_rejects_svg_by_content_type(self):
 		url = f"{self.cdn}/logo.svg"
 		with serving(Response(b"<svg/>", "image/svg+xml")):
 			imported = import_remote_assets([url])
 
-		self.assertTrue(imported[url].endswith(".svg"))
+		self.assertEqual(imported, {})
 
 	def test_keeps_gif_by_extension(self):
 		url = f"{self.cdn}/loader.gif"
@@ -173,3 +192,35 @@ class TestImportRemoteFonts(FrappeTestCase):
 			imported = import_remote_fonts(fonts)
 
 		self.assertEqual(len(imported), 2)
+
+
+class TestConvertToWebp(FrappeTestCase):
+	def test_requires_builder_write_permission(self):
+		previous_user = frappe.session.user
+		try:
+			frappe.set_user("Guest")
+			with self.assertRaises(frappe.PermissionError):
+				convert_to_webp(image_url="https://cdn.example.com/hero.png")
+		finally:
+			frappe.set_user(previous_user)
+
+	def test_rejects_builder_asset_path_traversal(self):
+		with self.assertRaises(frappe.PermissionError):
+			convert_to_webp(image_url="/builder_assets/../../private.png")
+
+	def test_fetches_external_images_through_the_bounded_client(self):
+		url = "https://cdn.example.com/convert.png"
+		with serving(Response(png_bytes())) as fetch:
+			file_url = convert_to_webp(image_url=url)
+
+		self.assertTrue(file_url.endswith(".webp"))
+		self.assertEqual(fetch.call_args.kwargs["max_bytes"], 12 * 1024 * 1024)
+		file = frappe.get_doc("File", frappe.db.get_value("File", {"file_url": file_url}, "name"))
+		file.delete()
+
+
+class TestRemoteTemplates(FrappeTestCase):
+	def test_remote_templates_are_disabled_by_default(self):
+		self.assertEqual(get_template_groups(), [])
+		with self.assertRaises(frappe.PermissionError):
+			create_page_from_template("remote-page")

@@ -2,11 +2,11 @@ import inspect
 import os
 import re
 import shutil
-import socket
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import wraps
 from os.path import join
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 import frappe
 import yaml
@@ -24,13 +24,13 @@ from frappe.utils.safe_exec import (
 	NamespaceDict,
 	get_python_builtins,
 	get_safe_globals,
-	is_safe_exec_enabled,
-	safe_exec,
 	safe_exec_flags,
 )
 from RestrictedPython import compile_restricted
 from RestrictedPython import safe_globals as restricted_safe_globals
 from werkzeug.routing import Rule
+
+from builder.network import fetch_public_data
 
 
 def compact_json(obj) -> str:
@@ -97,7 +97,7 @@ def has_page_permission(ptype: str = "write", message: str | None = None):
 					if ptype == "write"
 					else frappe._("You do not have permission to read pages")
 				)
-				frappe.throw(message or default_message)
+				frappe.throw(message or default_message, frappe.PermissionError)
 			return fn(*args, **kwargs)
 
 		return wrapper
@@ -113,6 +113,13 @@ def has_page_write(message: str | None = None):
 def has_page_read(message: str | None = None):
 	"""Decorator to check if user has read permission on Builder Page."""
 	return has_page_permission(ptype="read", message=message)
+
+
+def get_permitted_doc(doctype: str, name: str, permission_type: str = "read"):
+	doc = frappe.get_doc(doctype, name)
+	doc.flags.ignore_permissions = False
+	doc.check_permission(permission_type)
+	return doc
 
 
 @dataclass
@@ -235,25 +242,28 @@ class Block:
 def get_doc_as_dict(doctype, name):
 	assert isinstance(doctype, str)
 	assert isinstance(name, str)
-	return frappe.get_doc(doctype, name).as_dict()
+	return permitted_doc_as_dict(get_permitted_doc(doctype, name))
 
 
 def get_cached_doc_as_dict(doctype, name):
 	assert isinstance(doctype, str)
 	assert isinstance(name, str)
-	return frappe.get_cached_doc(doctype, name).as_dict()
+	return permitted_doc_as_dict(deepcopy(frappe.get_cached_doc(doctype, name)))
+
+
+def permitted_doc_as_dict(doc):
+	doc.flags.ignore_permissions = False
+	doc.check_permission("read")
+	doc.apply_fieldlevel_read_permissions()
+	return doc.as_dict()
 
 
 def make_safe_get_request(url, **kwargs):
-	parsed = urlparse(url)
-	parsed_ip = socket.gethostbyname(parsed.hostname)
-	if parsed_ip.startswith(("127", "10", "192", "172")):
-		return
-
-	return frappe.integrations.utils.make_get_request(url, **kwargs)
+	return fetch_public_data(url, max_bytes=1_000_000, params=kwargs.get("params"))
 
 
 def safe_get_list(*args, **kwargs):
+	kwargs["ignore_permissions"] = False
 	if args and len(args) > 1 and isinstance(args[1], list):
 		args = list(args)
 		args[1] = remove_unsafe_fields(args[1])
@@ -269,11 +279,35 @@ def safe_get_list(*args, **kwargs):
 
 
 def safe_get_all(*args, **kwargs):
-	kwargs["ignore_permissions"] = True
 	if "limit_page_length" not in kwargs:
 		kwargs["limit_page_length"] = 0
 
 	return safe_get_list(*args, **kwargs)
+
+
+def safe_count(doctype, filters=None, **kwargs):
+	kwargs["ignore_permissions"] = False
+	rows = frappe.get_list(
+		doctype,
+		filters=filters,
+		fields=[{"COUNT": "name", "as": "count"}],
+		limit_page_length=1,
+		**kwargs,
+	)
+	return rows[0].count if rows else 0
+
+
+def safe_exists(doctype, name_or_filters, **kwargs):
+	kwargs.pop("cache", None)
+	kwargs["ignore_permissions"] = False
+	filters = {"name": name_or_filters} if isinstance(name_or_filters, str) else name_or_filters
+	rows = frappe.get_list(doctype, filters=filters, pluck="name", limit_page_length=1, **kwargs)
+	return rows[0] if rows else None
+
+
+def safe_get_single_value(doctype, fieldname):
+	doc = permitted_doc_as_dict(frappe.get_single(doctype))
+	return doc.get(fieldname)
 
 
 def remove_unsafe_fields(fields):
@@ -295,11 +329,11 @@ def get_safer_globals():
 		args=form_dict,
 		frappe=NamespaceDict(
 			db=NamespaceDict(
-				count=frappe.db.count,
-				exists=frappe.db.exists,
+				count=safe_count,
+				exists=safe_exists,
 				get_all=safe_get_all,
 				get_list=safe_get_list,
-				get_single_value=frappe.db.get_single_value,
+				get_single_value=safe_get_single_value,
 			),
 			form_dict=form_dict,
 			make_get_request=make_safe_get_request,
@@ -609,10 +643,7 @@ def sanitize_style_value(value):
 
 
 def execute_script(script, _locals, script_filename):
-	if is_safe_exec_enabled():
-		safe_exec(script, None, _locals, script_filename=script_filename)
-	else:
-		safer_exec(script, None, _locals, script_filename=script_filename)
+	safer_exec(script, None, _locals, script_filename=script_filename)
 
 
 def clean_data(data):

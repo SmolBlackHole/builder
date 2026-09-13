@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import re
 from typing import ClassVar
@@ -254,6 +256,18 @@ class BlockCodec:
 			frappe.throw(_("Invalid image data: must be a base64-encoded data URL"))
 		if len(image_data) > 7 * 1024 * 1024:
 			frappe.throw(_("Image is too large. Please use an image smaller than 5 MB."))
+		header, encoded = image_data.split(";base64,", 1)
+		if header.removeprefix("data:").lower() not in {
+			"image/gif",
+			"image/jpeg",
+			"image/png",
+			"image/webp",
+		}:
+			frappe.throw(_("Unsupported image type. Use PNG, JPEG, WebP, or GIF."))
+		try:
+			base64.b64decode(encoded, validate=True)
+		except (binascii.Error, ValueError):
+			frappe.throw(_("Invalid image data: malformed base64 content"))
 		return image_data
 
 	@staticmethod

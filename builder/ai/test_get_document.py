@@ -24,3 +24,14 @@ class TestGetDocument(FrappeTestCase):
 		out = read({"doctype": "Builder Settings", "fields": ["no_such_field"]})
 
 		self.assertIn("no field 'no_such_field'", out["no_such_field"])
+
+	def test_rejects_a_known_document_without_read_permission(self):
+		previous_user = frappe.session.user
+		try:
+			frappe.set_user("Guest")
+			out = read({"doctype": "User", "name": "Administrator", "fields": ["email"]})
+		finally:
+			frappe.set_user(previous_user)
+
+		self.assertIn("error", out)
+		self.assertNotIn("email", out)

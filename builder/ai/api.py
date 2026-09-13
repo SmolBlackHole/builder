@@ -16,7 +16,8 @@ from builder.ai.agent.loop import run_agent_job
 from builder.ai.block_codec import BlockCodec
 from builder.ai.models import ModelRegistry
 from builder.ai.session import AISession
-from builder.utils import has_page_write
+from builder.network import fetch_public_bytes
+from builder.utils import get_permitted_doc, has_page_write
 
 logger = frappe.logger("builder.ai.api")
 logger.setLevel(logging.INFO)
@@ -54,12 +55,13 @@ def save_attached_image(data_url: str) -> str | None:
 			{
 				"doctype": "File",
 				"file_name": f"ai-attachment-{frappe.generate_hash(length=10)}.{ext}",
-				"is_private": 1,
 				"folder": "Home/Builder Uploads",
+				"is_private": 1,
 				"content": content,
 				"decode": True,
 			}
-		).insert(ignore_permissions=True)
+		)
+		file.insert(ignore_permissions=True)
 		return file.file_url
 	except Exception:
 		logger.warning("could not save the attached image as a file", exc_info=True)
@@ -84,6 +86,7 @@ def run(
 	accepted ops to the canvas.
 	"""
 	logger.info(f"run: page_id={page_id}, model={model}, session_id={session_id}")
+	get_permitted_doc("Builder Page", page_id, "write")
 
 	image_url = BlockCodec.validate_image_data(image_data) if image_data else None
 
@@ -150,6 +153,7 @@ Write it as the user speaking, plain text, no headings or bullets unless the dra
 
 
 @frappe.whitelist()
+@has_page_write()
 def improve_prompt(prompt: str, model: str | None = None) -> str:
 	"""One cheap completion that sharpens the composer draft in place — the user
 	reviews and edits the result before sending it."""
@@ -301,17 +305,25 @@ def save_ai_provider(provider: dict, name: str | None = None) -> str:
 	"""Create or update a provider from the settings UI. An omitted api_key keeps
 	the stored one: the client never receives it (keys live in __Auth), so without
 	this, editing the API base would wipe the key."""
-	if not frappe.has_permission("Builder AI Provider", "write"):
+	if "System Manager" not in frappe.get_roles():
 		frappe.throw(_("You are not permitted to manage AI providers"), frappe.PermissionError)
 
 	doc = (
-		frappe.get_doc("Builder AI Provider", name)
-		if name and frappe.db.exists("Builder AI Provider", name)
+		get_permitted_doc("Builder AI Provider", name, "write")
+		if name
 		else frappe.new_doc("Builder AI Provider")
 	)
+	old_identity = (doc.api_base, doc.route_prefix, doc.litellm_provider)
+	has_stored_key = bool(doc.resolved_key()) if name else False
 	for field in PROVIDER_FIELDS:
 		if field in provider:
 			doc.set(field, provider[field])
+	new_identity = (doc.api_base, doc.route_prefix, doc.litellm_provider)
+	if has_stored_key and old_identity != new_identity and not provider.get("api_key"):
+		frappe.throw(
+			_("Re-enter the provider API key when changing its endpoint or routing identity."),
+			frappe.ValidationError,
+		)
 	if provider.get("api_key"):
 		doc.api_key = provider["api_key"]
 	doc.save()
@@ -329,23 +341,22 @@ def import_provider_models(provider: str) -> dict:
 	Saves typing model ids by hand, and is the only way to discover what a private
 	or self-hosted gateway actually serves. Existing rows are left alone, so this
 	is safe to re-run when a provider adds a model."""
-	if not frappe.has_permission("Builder AI Model", "create"):
+	if "System Manager" not in frappe.get_roles():
 		frappe.throw(_("You are not permitted to manage AI models"), frappe.PermissionError)
 
-	doc = frappe.get_doc("Builder AI Provider", provider)
+	doc = get_permitted_doc("Builder AI Provider", provider)
 	if not doc.api_base:
 		frappe.throw(_("This provider has no API Base to ask"))
-
-	import requests
 
 	url = f"{doc.api_base.rstrip('/')}/models"
 	headers = {"Content-Type": "application/json"}
 	if key := (doc.resolved_key() or resolve_api_key()):
 		headers["Authorization"] = f"Bearer {key}"
 	try:
-		response = requests.get(url, headers=headers, timeout=20)
-		response.raise_for_status()
-		listed = response.json().get("data") or []
+		content, _response_headers, _final_url = fetch_public_bytes(
+			url, headers=headers, max_bytes=2 * 1024 * 1024, max_redirects=0
+		)
+		listed = (frappe.parse_json(content.decode("utf-8")) or {}).get("data") or []
 	except Exception as e:
 		logger.warning(f"import_provider_models failed for {provider}: {e}")
 		frappe.throw(_("Could not reach {0}: {1}").format(url, str(e)[:200]))

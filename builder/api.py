@@ -1,18 +1,17 @@
-import ipaddress
 import os
-import socket
 from io import BytesIO
+from pathlib import Path
 from types import FunctionType, MethodType, ModuleType
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 import frappe
-import requests
 from frappe import _
 from frappe.apps import get_apps as get_permitted_apps
 from frappe.core.doctype.file.file import get_local_image
 from frappe.core.doctype.file.utils import delete_file
 from frappe.model.document import Document
+from frappe.rate_limiter import rate_limit
 from frappe.utils.caching import redis_cache
 from frappe.utils.safe_exec import NamespaceDict, get_safe_globals
 from PIL import Image
@@ -21,7 +20,14 @@ from werkzeug.wrappers import Response
 from builder import builder_analytics
 from builder.builder.doctype.builder_page.builder_page import BuilderPageRenderer
 from builder.builder.doctype.builder_snapshot import builder_snapshot
-from builder.utils import compact_json, has_page_read, has_page_write, normalize_renamed_doc
+from builder.network import fetch_public_bytes, fetch_public_data
+from builder.utils import (
+	compact_json,
+	get_permitted_doc,
+	has_page_read,
+	has_page_write,
+	normalize_renamed_doc,
+)
 
 
 @frappe.whitelist()
@@ -67,6 +73,9 @@ def upload_builder_asset():
 	from frappe.handler import upload_file
 
 	image_file = upload_file()
+	if image_file and image_file.file_url.lower().split("?", 1)[0].endswith(".svg"):
+		image_file.delete()
+		frappe.throw(_("SVG uploads are not allowed for Builder assets."), frappe.ValidationError)
 	if (
 		image_file
 		and image_file.file_url.endswith((".png", ".jpeg", ".jpg"))
@@ -136,15 +145,11 @@ def import_remote_font(family: str, url: str) -> str:
 	if existing:
 		return existing
 
-	assert_not_private_url(url)
 	extension = next((e for e in FONT_EXTENSIONS if urlparse(url).path.lower().endswith(f".{e}")), None)
 	if not extension:
 		frappe.throw(f"Not a font file: {url}")
 
-	response = requests.get(url, timeout=20, headers={"User-Agent": "FrappeBuilder/1.0"})
-	response.raise_for_status()
-	if len(response.content) > MAX_FONT_BYTES:
-		frappe.throw(f"Font is larger than {MAX_FONT_BYTES // (1024 * 1024)}MB: {url}")
+	content, _, _ = fetch_public_bytes(url, max_bytes=MAX_FONT_BYTES)
 
 	file = frappe.get_doc(
 		{
@@ -152,7 +157,7 @@ def import_remote_font(family: str, url: str) -> str:
 			"file_name": f"{frappe.scrub(family)}.{extension}",
 			"is_private": 0,
 			"folder": "Home/Builder Uploads/Fonts",
-			"content": response.content,
+			"content": content,
 		}
 	).insert()
 	frappe.get_doc({"doctype": "User Font", "font_name": family, "font_file": file.file_url}).insert()
@@ -162,7 +167,7 @@ def import_remote_font(family: str, url: str) -> str:
 MAX_IMPORTED_ASSETS = 200
 MAX_ASSET_BYTES = 12 * 1024 * 1024
 # formats that lose something on a webp round trip (animation, vector text)
-KEEP_AS_IS = {"image/svg+xml": "svg", "image/gif": "gif"}
+KEEP_AS_IS = {"image/gif": "gif"}
 # the canvas never draws more than a couple of thousand pixels across, even at 2x
 MAX_IMAGE_EDGE = 2048
 
@@ -170,7 +175,6 @@ MAX_IMAGE_EDGE = 2048
 def import_remote_asset(url: str) -> str:
 	import hashlib
 
-	assert_not_private_url(url)
 	digest = hashlib.md5(url.encode()).hexdigest()[:10]
 	# the name is derived from the URL, so importing the same asset twice reuses the file
 	stem = f"builder-import-{digest}"
@@ -178,13 +182,9 @@ def import_remote_asset(url: str) -> str:
 	if existing:
 		return existing
 
-	response = requests.get(url, timeout=20, headers={"User-Agent": "FrappeBuilder/1.0"})
-	response.raise_for_status()
-	content = response.content
-	if len(content) > MAX_ASSET_BYTES:
-		frappe.throw(f"Asset is larger than {MAX_ASSET_BYTES // (1024 * 1024)}MB: {url}")
+	content, headers, _ = fetch_public_bytes(url, max_bytes=MAX_ASSET_BYTES)
 
-	content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+	content_type = headers.get("content-type", "").split(";")[0].strip().lower()
 	extension = KEEP_AS_IS.get(content_type) or guess_keep_as_is_extension(url)
 	if extension:
 		return save_imported_asset(f"{stem}.{extension}", content)
@@ -219,6 +219,7 @@ def save_imported_asset(file_name: str, content: bytes) -> str:
 
 
 @frappe.whitelist()
+@has_page_write("You do not have permission to convert assets.")
 def convert_to_webp(image_url: str | None = None, file_doc: Document | None = None) -> str:
 	"""
 	Convert image to webp format.
@@ -233,6 +234,7 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		return extn.lower() in CONVERTIBLE_IMAGE_EXTENSIONS
 
 	def get_extension(filename: str) -> str:
+		filename = str(filename)
 		return filename.split(".")[-1].lower() if "." in filename else ""
 
 	def save_as_webp(image, path: str) -> None:
@@ -241,6 +243,11 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
 		image.save(path, "WEBP")
 
+	def validate_image(image) -> None:
+		if image.width * image.height > MAX_IMAGE_EDGE * MAX_IMAGE_EDGE * 4:
+			frappe.throw(_("Image dimensions exceed the allowed size."), frappe.ValidationError)
+		image.load()
+
 	def to_webp_url(url: str, extn: str) -> str:
 		return url.replace(extn, "webp")
 
@@ -248,11 +255,14 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		return path.replace(extn, "webp")
 
 	def handle_file_doc(file_doc: Document) -> str:
+		file_doc.flags.ignore_permissions = False
+		file_doc.check_permission("write")
 		if not file_doc.file_url.startswith("/files"):
 			return file_doc.file_url
 		image, _, extn = get_local_image(file_doc.file_url)
 		if not can_convert_image(extn):
 			return file_doc.file_url
+		validate_image(image)
 		save_as_webp(image, to_webp_path(file_doc.get_full_path(), extn))
 		delete_file(file_doc.get_full_path())
 		file_doc.file_url = to_webp_url(file_doc.file_url, extn)
@@ -263,10 +273,13 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		image, _, extn = get_local_image(image_url)
 		if not can_convert_image(extn):
 			return image_url
-		files = frappe.get_all("File", filters={"file_url": image_url}, fields=["name"], limit=1)
+		files = frappe.get_list("File", filters={"file_url": image_url}, fields=["name"], limit=1)
 		if not files:
 			return image_url
 		file = frappe.get_doc("File", files[0].name)
+		file.flags.ignore_permissions = False
+		file.check_permission("write")
+		validate_image(image)
 		save_as_webp(image, to_webp_path(file.get_full_path(), extn))
 		new_file = frappe.copy_doc(file)
 		new_file.file_name = to_webp_url(file.file_name, extn)
@@ -275,14 +288,20 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		return new_file.file_url
 
 	def handle_builder_asset(image_url: str) -> str:
-		image_path = os.path.abspath(frappe.get_app_path("builder", "www", image_url.lstrip("/")))
-		image_path = image_path.replace("_", "-").replace("/builder-assets", "/builder_assets")
+		asset_root = Path(frappe.get_app_path("builder", "www", "builder_assets")).resolve()
+		relative_path = image_url.removeprefix("/builder_assets/")
+		image_path = (asset_root / relative_path).resolve()
+		if not image_path.is_relative_to(asset_root):
+			frappe.throw(_("Invalid Builder asset path."), frappe.PermissionError)
 		extn = get_extension(image_path)
 		if not can_convert_image(extn):
 			return image_url
 		image = Image.open(image_path)
-		save_as_webp(image, to_webp_path(image_path, extn))
-		return to_webp_url(image_url, extn)
+		validate_image(image)
+		buffer = BytesIO()
+		image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+		image.save(buffer, "WEBP")
+		return save_imported_asset(f"builder-{frappe.generate_hash(length=10)}.webp", buffer.getvalue())
 
 	def get_external_webp_filename(image_url: str) -> str:
 		filename = image_url.split("/")[-1].split("?")[0]
@@ -292,14 +311,13 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 		return base + ".webp"
 
 	def handle_external_url(image_url: str) -> str:
-		url = unquote(image_url)
-		assert_not_private_url(url)
-		image = Image.open(BytesIO(requests.get(url).content))
-		filename = get_external_webp_filename(url)
-		file = frappe.get_doc({"doctype": "File", "file_name": filename, "file_url": f"/files/{filename}"})
-		save_as_webp(image, file.get_full_path())
-		file.save()
-		return file.file_url
+		content, _, final_url = fetch_public_bytes(image_url, max_bytes=MAX_ASSET_BYTES)
+		image = Image.open(BytesIO(content))
+		validate_image(image)
+		buffer = BytesIO()
+		image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
+		image.save(buffer, "WEBP")
+		return save_imported_asset(get_external_webp_filename(final_url), buffer.getvalue())
 
 	if not image_url and not file_doc:
 		return ""
@@ -314,31 +332,6 @@ def convert_to_webp(image_url: str | None = None, file_doc: Document | None = No
 	if image_url.startswith("http"):
 		return handle_external_url(image_url)
 	return image_url
-
-
-def assert_not_private_url(url: str) -> list[str]:
-	"""Raise PermissionError if the URL resolves to a private/internal IP (SSRF guard).
-	Returns the addresses it validated so a caller can PIN its connection to one — a
-	second DNS resolution at connect time can answer differently (DNS rebinding)."""
-	parsed = urlparse(url)
-	if parsed.scheme not in ("http", "https"):
-		frappe.throw(_("Only HTTP/HTTPS URLs are allowed for external images."), frappe.PermissionError)
-	hostname = parsed.hostname
-	if not hostname:
-		frappe.throw(_("Invalid URL: missing hostname."), frappe.ValidationError)
-	try:
-		addr_infos = socket.getaddrinfo(hostname, None)
-	except socket.gaierror:
-		frappe.throw(_("Could not resolve hostname: {0}").format(hostname), frappe.ValidationError)
-	ips = []
-	for addr_info in addr_infos:
-		ip = ipaddress.ip_address(addr_info[4][0])
-		if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-			frappe.throw(
-				_("Requests to private or internal addresses are not allowed."), frappe.PermissionError
-			)
-		ips.append(str(ip))
-	return ips
 
 
 def check_app_permission():
@@ -414,11 +407,10 @@ def get_apps():
 @frappe.whitelist()
 @has_page_write("You do not have permission to update page folder.")
 def update_page_folder(pages: list[str], folder_name: str) -> None:
-	if not pages:
-		return
-	frappe.db.set_value(
-		"Builder Page", {"name": ["in", pages]}, "project_folder", folder_name, update_modified=False
-	)
+	for page_name in pages or []:
+		page = get_permitted_doc("Builder Page", page_name, "write")
+		page.project_folder = folder_name
+		page.save()
 
 
 def clone_client_scripts(source_page, new_page) -> None:
@@ -427,17 +419,17 @@ def clone_client_scripts(source_page, new_page) -> None:
 	client_scripts = source_page.client_scripts
 	new_page.client_scripts = []
 	for script in client_scripts:
-		builder_script = frappe.get_doc("Builder Client Script", script.builder_script)
+		builder_script = get_permitted_doc("Builder Client Script", script.builder_script)
 		new_script = frappe.copy_doc(builder_script)
 		new_script.name = f"{builder_script.name}-{frappe.generate_hash(length=5)}"
-		new_script.insert(ignore_permissions=True)
+		new_script.insert()
 		new_page.append("client_scripts", {"builder_script": new_script.name})
 
 
 @frappe.whitelist()
 @has_page_write("You do not have permission to duplicate a page.")
 def duplicate_page(page_name: str):
-	page = frappe.get_doc("Builder Page", page_name)
+	page = get_permitted_doc("Builder Page", page_name)
 	new_page = frappe.copy_doc(page)
 	del new_page.page_name
 	new_page.route = None
@@ -451,21 +443,21 @@ def duplicate_page(page_name: str):
 # and, on use, a per-page bundle over HTTP (server-side — no CORS), then builds a
 # page from it. Point at the hub via `template_hub_url` in the site config (or
 # common_site_config for the whole bench).
-DEFAULT_HUB_URL = "https://preview.frappe.cloud"
-
-
 def hub_url() -> str:
-	return (frappe.conf.get("template_hub_url") or DEFAULT_HUB_URL).rstrip("/")
+	if not frappe.conf.get("builder_enable_remote_templates"):
+		return ""
+	return (frappe.conf.get("template_hub_url") or "").rstrip("/")
 
 
 @redis_cache(ttl=600)
 def hub_get_cached(method: str, params_key: tuple):
-	# make_get_request (not builder's make_safe_get_request, which blocks private
-	# IPs and would reject a localhost hub). Trust = admin-set hub URL.
-	from frappe.integrations.utils import make_get_request
-
-	resp = make_get_request(
-		f"{hub_url()}/api/method/builder_hub.api.{method}", params=dict(params_key) or None
+	base_url = hub_url()
+	if not base_url:
+		return None
+	resp = fetch_public_data(
+		f"{base_url}/api/method/builder_hub.api.{method}",
+		params=dict(params_key) or None,
+		max_bytes=8 * 1024 * 1024,
 	)
 	return resp.get("message") if resp else None
 
@@ -479,6 +471,8 @@ def hub_get(method: str, **params):
 def get_template_groups() -> list[dict]:
 	"""Template groups for the picker, fetched live from the hub. Empty (just
 	Blank page) if the hub is unreachable."""
+	if "System Manager" not in frappe.get_roles() or not hub_url():
+		return []
 	try:
 		return hub_get("get_catalog") or []  # type: ignore[return-value]
 	except Exception:
@@ -549,6 +543,8 @@ def create_page_from_bundle(
 @has_page_write("You do not have permission to create a page.")
 def create_page_from_template(template_page: str, project_folder: str | None = None) -> str:
 	"""Create an editable page from a hub template and return its name."""
+	if "System Manager" not in frappe.get_roles() or not hub_url():
+		frappe.throw(_("Remote templates are disabled."), frappe.PermissionError)
 	try:
 		bundle = hub_get("get_template_bundle", page=template_page)
 	except Exception:
@@ -565,6 +561,8 @@ def create_page_from_template(template_page: str, project_folder: str | None = N
 @has_page_write("You do not have permission to create pages.")
 def import_template_group(template_group: str, project_folder: str | None = None) -> list[str]:
 	"""Import all pages from a template group and return their names."""
+	if "System Manager" not in frappe.get_roles() or not hub_url():
+		frappe.throw(_("Remote templates are disabled."), frappe.PermissionError)
 	groups = get_template_groups()
 	group = next((g for g in groups if g.get("name") == template_group), None)
 	if not group:
@@ -595,18 +593,21 @@ def import_template_group(template_group: str, project_folder: str | None = None
 @frappe.whitelist()
 @has_page_write("You do not have permission to delete a folder.")
 def delete_folder(folder_name: str) -> None:
-	# remove folder from all pages in a single update
-	frappe.db.set_value(
-		"Builder Page", {"project_folder": folder_name}, "project_folder", "", update_modified=False
-	)
-
-	frappe.db.delete("Builder Project Folder", {"folder_name": folder_name})
+	folder_doc_name = frappe.db.get_value("Builder Project Folder", {"folder_name": folder_name}, "name")
+	if not folder_doc_name:
+		return
+	folder = get_permitted_doc("Builder Project Folder", folder_doc_name, "delete")
+	for page_name in frappe.get_list("Builder Page", filters={"project_folder": folder_name}, pluck="name"):
+		page = get_permitted_doc("Builder Page", page_name, "write")
+		page.project_folder = ""
+		page.save()
+	folder.delete()
 
 
 @frappe.whitelist()
 @has_page_write("You do not have permission to sync a component.")
 def sync_component(component_id: str):
-	component = frappe.get_doc("Builder Component", component_id)
+	component = get_permitted_doc("Builder Component", component_id, "write")
 	component.sync_component()
 
 
@@ -663,6 +664,7 @@ def get_page_ctr(
 
 
 @frappe.whitelist(allow_guest=True, methods=["POST"])
+@rate_limit(limit=60, seconds=60, methods=["POST"], ip_based=True)
 def make_click_log(
 	element: str | None = None,
 	text: str | None = None,
@@ -691,10 +693,10 @@ def make_click_log(
 
 	click = frappe.new_doc("Builder Page Click")
 	click.path = path
-	click.element = element
+	click.element = element[:140] if element else element
 	click.text = text[:140] if text else text  # cap server-side; deferred_insert skips controller validation
 	click.is_unique = is_unique
-	click.visitor_id = visitor_id
+	click.visitor_id = visitor_id[:140] if visitor_id else visitor_id
 
 	try:
 		click.deferred_insert()
@@ -756,6 +758,10 @@ def get_codemirror_completions():
 @has_page_write("You do not have permission to reorder client scripts")
 def reorder_client_scripts(script_order: list[str]):
 	for idx, script_name in enumerate(script_order, start=1):
+		row = frappe.get_doc("Builder Page Client Script", script_name)
+		if row.parenttype != "Builder Page":
+			frappe.throw(_("Invalid page script row."), frappe.ValidationError)
+		get_permitted_doc("Builder Page", row.parent, "write")
 		frappe.db.set_value("Builder Page Client Script", script_name, "idx", idx)
 
 
@@ -768,6 +774,8 @@ def get_component_data(
 		get_component_data as _get_component_data,
 	)
 
+	get_permitted_doc("Builder Component", component_name)
+
 	return _get_component_data(component_name, props, script)
 
 
@@ -777,6 +785,8 @@ def identify_persona(role: str | None = None, use_case: str | None = None, sourc
 	"""Attach the onboarding answers to the site's Pulse profile so every Builder
 	metric can be split by persona without joining events."""
 	if not any((role, use_case, source)):
+		return
+	if not frappe.conf.get("builder_enable_persona_telemetry"):
 		return
 	try:
 		from frappe.utils.telemetry.pulse.client import identify

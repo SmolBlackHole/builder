@@ -165,25 +165,30 @@ class TestBuilderUtils(FrappeTestCase):
 		execute_script("data.sum = a + b", {"data": data, "a": 2, "b": 2}, "test.py")
 		self.assertEqual(data.sum, 4)
 
-	@patch("builder.utils.is_safe_exec_enabled", return_value=False)
-	@patch("frappe.utils.safe_exec.is_safe_exec_enabled", return_value=False)
-	def test_execute_script_with_enabled_server_script(self, *args):
+	def test_execute_script_uses_permitted_document_reads(self):
 		script = "data.test = frappe.get_doc('User', 'Administrator').email"
 		_locals = dict(data=frappe._dict())
 		execute_script(script, _locals, "test.py")
 		self.assertEqual(_locals["data"]["test"], "admin@example.com")
 
-	@patch("builder.utils.is_safe_exec_enabled", return_value=True)
-	@patch("frappe.utils.safe_exec.is_safe_exec_enabled", return_value=True)
-	def test_execute_script_with_disabled_server_script(self, *args):
+	def test_execute_script_rejects_permission_bypasses(self):
 		script = "data.test = frappe.get_doc('User', 'Administrator').email"
-		_locals = dict(data=frappe._dict())
-		execute_script(script, _locals, "test.py")
-		self.assertEqual(_locals["data"]["test"], "admin@example.com")
+		previous_user = frappe.session.user
+		try:
+			frappe.set_user("Guest")
+			with self.assertRaises(frappe.PermissionError):
+				execute_script(script, {"data": frappe._dict()}, "test.py")
 
-		script = "data.users = frappe.db.get_all('User')"
-		execute_script(script, _locals, "test.py")
-		self.assertTrue(_locals["data"]["users"])
+			for expression in (
+				"data.users = frappe.db.get_all('User')",
+				"data.users = frappe.db.get_list('User', ignore_permissions=True)",
+				"data.exists = frappe.db.exists('User', 'Administrator')",
+				"data.count = frappe.db.count('User')",
+			):
+				with self.assertRaises(frappe.PermissionError):
+					execute_script(expression, {"data": frappe._dict()}, "test.py")
+		finally:
+			frappe.set_user(previous_user)
 
 	def test_colon_rule(self):
 		rule = ColonRule("/test/<name>", endpoint="test_endpoint")
@@ -211,12 +216,11 @@ class TestBuilderUtils(FrappeTestCase):
 		self.assertEqual(cleaned_data, {"test": "value", "test2": "value2", "test4": None, "test5": {}})
 
 	def test_make_safe_get_request(self):
-		# Test with local/private IP addresses (should return None)
-		self.assertIsNone(make_safe_get_request("http://127.0.0.1/test"))
-		self.assertIsNone(make_safe_get_request("http://localhost/test"))
+		for url in ("http://127.0.0.1/test", "http://localhost/test"):
+			with self.assertRaises(frappe.PermissionError):
+				make_safe_get_request(url)
 
-		# Test with invalid URL
-		with self.assertRaises(Exception):
+		with self.assertRaises(frappe.PermissionError):
 			make_safe_get_request("not-a-url")
 
 	def test_split_styles(self):

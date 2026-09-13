@@ -17,6 +17,7 @@ import frappe
 
 from builder.ai.agent import pending
 from builder.ai.agent.registry import Tool
+from builder.utils import get_permitted_doc
 
 logger = frappe.logger("builder.ai.agent.data")
 logger.setLevel(logging.INFO)
@@ -36,20 +37,22 @@ def list_doctypes(ctx, args: dict) -> str:
 	search = (args.get("search") or "").strip()
 	if search:
 		filters["name"] = ["like", f"%{search}%"]
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"DocType",
 		filters=filters,
 		fields=["name", "module", "custom"],
 		order_by="modified desc",
 		limit=min(int(args.get("limit") or 40), 100),
 	)
-	return json.dumps([dict(r) for r in rows])
+	return json.dumps([dict(r) for r in rows if frappe.has_permission(r.name, "read")])
 
 
 def get_doctype_schema(ctx, args: dict) -> str:
 	dt = (args.get("doctype") or "").strip()
 	if not dt or not frappe.db.exists("DocType", dt):
 		return json.dumps({"error": f"DocType '{dt}' not found"})
+	if not frappe.has_permission(dt, "read"):
+		return json.dumps({"error": f"You don't have permission to read {dt}"})
 	meta = frappe.get_meta(dt)
 	fields = [
 		{"fieldname": f.fieldname, "label": f.label, "fieldtype": f.fieldtype, "options": f.options}
@@ -81,12 +84,12 @@ def get_document(ctx, args: dict) -> str:
 	dt = (args.get("doctype") or "").strip()
 	if not dt or not frappe.db.exists("DocType", dt):
 		return json.dumps({"error": f"DocType '{dt}' not found"})
-	if not frappe.has_permission(dt, "read"):
-		return json.dumps({"error": f"You don't have permission to read {dt}"})
 	meta = frappe.get_meta(dt)
 	try:
 		if meta.issingle:
 			doc = frappe.get_cached_doc(dt)
+			doc.flags.ignore_permissions = False
+			doc.check_permission("read")
 		else:
 			name = (args.get("name") or "").strip()
 			if not name:
@@ -95,10 +98,11 @@ def get_document(ctx, args: dict) -> str:
 				)
 			if not frappe.db.exists(dt, name):
 				return json.dumps({"error": f"{dt} '{name}' not found"})
-			doc = frappe.get_doc(dt, name)
+			doc = get_permitted_doc(dt, name)
 	except Exception as e:
 		return json.dumps({"error": str(e)})
 
+	doc.apply_fieldlevel_read_permissions()
 	data = doc.as_dict()
 	wanted = args.get("fields")
 	if isinstance(wanted, list) and wanted:
@@ -209,7 +213,9 @@ def write_page_data_script(ctx, args: dict) -> str:
 			"'MMM dd'), frappe.utils.now_datetime, frappe.utils.add_days, frappe.utils.fmt_money). "
 			"Rewrite without imports."
 		)
-	frappe.db.set_value("Builder Page", ctx.page_id, "page_data_script", script)
+	page = get_permitted_doc("Builder Page", ctx.page_id, "write")
+	page.page_data_script = script
+	page.save()
 	from builder.ai.agent.tools.settings import emit_refetch
 
 	emit_refetch(ctx, "page_data")

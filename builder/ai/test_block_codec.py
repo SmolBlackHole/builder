@@ -177,6 +177,12 @@ class TestHelpers(FrappeTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			BlockCodec.validate_image_data("https://example.com/a.png")
 
+	def test_rejects_active_or_malformed_image_data(self):
+		with self.assertRaises(frappe.ValidationError):
+			BlockCodec.validate_image_data("data:image/svg+xml;base64,PHN2Zy8+")
+		with self.assertRaises(frappe.ValidationError):
+			BlockCodec.validate_image_data("data:image/png;base64,not-valid-base64")
+
 	def test_rejects_an_image_that_is_too_large(self):
 		with self.assertRaises(frappe.ValidationError):
 			BlockCodec.validate_image_data("data:image/png;base64," + "A" * (7 * 1024 * 1024))

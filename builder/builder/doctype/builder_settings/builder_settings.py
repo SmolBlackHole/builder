@@ -23,7 +23,7 @@ class BuilderSettings(Document):
 		body_html: DF.Code | None
 		default_language: DF.Data | None
 		disable_auto_dark_mode: DF.Check
-		execute_block_scripts_in_editor: DF.Literal["Don't Execute", "Restricted", "Unrestricted"]
+		execute_block_scripts_in_editor: DF.Literal["Don't Execute", "Unrestricted"]
 		favicon: DF.AttachImage | None
 		head_html: DF.Code | None
 		home_page: DF.Data | None

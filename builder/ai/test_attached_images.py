@@ -1,5 +1,6 @@
 import base64
 import json
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
@@ -26,7 +27,7 @@ class TestAttachedImages(FrappeTestCase):
 	def test_saved_file_is_private_and_round_trips(self):
 		file_url = save_attached_image(DATA_URL)
 		self.assertTrue(file_url.startswith("/private/files/"))
-		content = frappe.get_doc("File", {"file_url": file_url}).get_content()
+		content = frappe.get_doc("File", {"file_url": file_url}).get_content(encodings=[])
 		if isinstance(content, str):
 			content = content.encode()
 		self.assertEqual(content, PNG_BYTES)
